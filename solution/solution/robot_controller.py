@@ -19,7 +19,6 @@ class RobotController(Node):
     def __init__(self):
         super().__init__('robot_controller')
 
-        # Parameters
         self.declare_parameter('robot_id', 'robot1')
         self.declare_parameter('x', 0.0)
         self.declare_parameter('y', 0.0)
@@ -32,15 +31,12 @@ class RobotController(Node):
         self.declare_parameter('offload_size', 0.30)
         self.declare_parameter('radiation_threshold', 45)
 
-        # Overshoot settings
         self.declare_parameter('overshoot_linear', 0.12)
         self.declare_parameter('overshoot_ticks', 12)
 
-        # Exit decon zone settings
         self.declare_parameter('exit_decon_linear', 0.12)
         self.declare_parameter('exit_decon_angular', 0.18)
 
-        # NEW: Search behavior settings (move forward while turning)
         self.declare_parameter('search_linear', 0.15)
         self.declare_parameter('search_angular', 0.25)
 
@@ -49,7 +45,6 @@ class RobotController(Node):
         self. initial_y = self.get_parameter('y').value
         self.initial_yaw = self. get_parameter('yaw').value
 
-        # State
         self.first_time = True
         self.holding_item = False
         self.latest_barrels:  Optional[BarrelList] = None
@@ -61,20 +56,16 @@ class RobotController(Node):
         self.pending_action = None
         self.pending_future = None
 
-        # Overshoot state
         self.overshooting_pickup = False
         self.overshoot_ticks_left = 0
 
-        # NEW: Green zone memory (remember last seen position)
         self.last_green_zone = None
         self.green_zone_memory_ticks = 0
         self.declare_parameter('zone_memory_ticks', 50)
 
-        # NEW: Search state
         self.search_ticks = 0
         self. search_turn_direction = 1
 
-        # Publishers/Subscribers
         self.cmd_pub = self.create_publisher(Twist, '/robot1/cmd_vel', 10)
         self.create_subscription(BarrelList, '/robot1/barrels', self.barrels_cb, 10)
         self.create_subscription(ZoneList, '/robot1/zones', self. zones_cb, 10)
@@ -82,7 +73,6 @@ class RobotController(Node):
         self.create_subscription(LaserScan, '/robot1/scan', self.scan_cb, 10)
         self.create_subscription(Odometry, '/robot1/odom', self.odom_cb, 10)
 
-        # Service clients
         self.pickup_client = self.create_client(ItemRequest, '/pick_up_item')
         self.offload_client = self. create_client(ItemRequest, '/offload_item')
         self.decon_client = self.create_client(ItemRequest, '/decontaminate')
@@ -95,9 +85,8 @@ class RobotController(Node):
 
     def zones_cb(self, msg: ZoneList):
         self.latest_zones = msg
-        # Remember green zone when detected
         for z in msg.data:
-            if z.zone == 1:  # GREEN
+            if z.zone == 1:
                 self.last_green_zone = z
                 self.green_zone_memory_ticks = int(self.get_parameter('zone_memory_ticks').value)
                 self.get_logger().info(f'Green zone detected:  x={z.x}, size={z.size}')
@@ -164,12 +153,10 @@ class RobotController(Node):
         linear = self.get_parameter('search_linear').value
         angular = self.get_parameter('search_angular').value * self.search_turn_direction
 
-        # Change turn direction every 60 ticks (6 seconds)
         if self.search_ticks % 60 == 0:
             self. search_turn_direction *= -1
             self.get_logger().info('Changing search direction.. .')
 
-        # Obstacle avoidance during search
         if self.obstacle_ahead():
             linear = 0.0
             angular = 0.6 * self.search_turn_direction
@@ -200,7 +187,7 @@ class RobotController(Node):
             self.get_logger().info(f'{self.pending_action}:  {result.success} - {result.message}')
             if self.pending_action == 'pick_up' and result.success:
                 self.holding_item = True
-                self. search_ticks = 0  # Reset search counter
+                self. search_ticks = 0
                 self. get_logger().info('=== BARREL PICKED UP!  Now searching for GREEN ZONE ===')
             if self.pending_action == 'offload' and result.success:
                 self.holding_item = False
@@ -219,7 +206,6 @@ class RobotController(Node):
 
         self.handle_pending_action()
 
-        # Decay green zone memory
         if self.green_zone_memory_ticks > 0:
             self.green_zone_memory_ticks -= 1
         else:
@@ -234,7 +220,6 @@ class RobotController(Node):
 
         twist = self.make_twist(0.0, 0.0)
 
-        # Overshoot behavior for pickup
         if self.overshooting_pickup:
             twist = self.make_twist(self.get_parameter('overshoot_linear').value, 0.0)
             self.overshoot_ticks_left -= 1
@@ -244,14 +229,12 @@ class RobotController(Node):
                     self. call_item_service(self.pickup_client, 'pick_up')
 
         elif need_decon and decon_zone is not None and not self.holding_item:
-            # Go to decontamination zone (only when not holding item)
             twist = self.approach_by_image(decon_zone.x, decon_zone.size,
                                            self.get_parameter('offload_size').value)
             if decon_zone.size >= self.get_parameter('offload_size').value:
                 self.call_item_service(self.decon_client, 'decontaminate')
 
         elif self.holding_item:
-            # PRIORITY: Go to green zone to offload the barrel
             target_green = green_zone or self.last_green_zone
             
             if target_green is not None:
@@ -262,12 +245,10 @@ class RobotController(Node):
                     self.get_logger().info('At green zone, depositing barrel.. .')
                     self.call_item_service(self.offload_client, 'offload')
             else:
-                # GREEN ZONE NOT VISIBLE - Move forward while searching (NOT just spinning)
                 self.get_logger().info('Searching for green zone (moving forward)...')
                 twist = self.search_for_zone()
 
         else:
-            # Search for barrels
             if barrel is not None:
                 twist = self.approach_by_image(barrel.x, barrel.size,
                                                self.get_parameter('pickup_size').value)
@@ -276,13 +257,10 @@ class RobotController(Node):
                         self.overshooting_pickup = True
                         self.overshoot_ticks_left = int(self.get_parameter('overshoot_ticks').value)
             else:
-                # Wander/search for barrels
                 twist = self.make_twist(0.12, 0.35)
 
-        # Obstacle avoidance override (but keep moving if holding item)
         if self.obstacle_ahead() and twist.linear.x > 0:
             if self.holding_item:
-                # Turn away from obstacle but keep trying to move
                 twist = self.make_twist(0.05, 0.7 * self.search_turn_direction)
             else:
                 twist = self.make_twist(0.0, 0.8)
